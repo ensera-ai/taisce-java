@@ -6,17 +6,27 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>ai.ensera.taisce</groupId>
   <artifactId>taisce-java</artifactId>
-  <version>0.1.0</version>
+  <version>${revision}</version>
   <packaging>pom</packaging>
   <name>Taisce for Java</name>
   <description>The client and the LangChain4j and Spring AI adapters for a Taisce memory deployment.</description>
   <licenses><license><name>Apache-2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0</url></license></licenses>
+  <url>https://github.com/ensera-ai/taisce-java</url>
+  <scm>
+    <connection>scm:git:https://github.com/ensera-ai/taisce-java.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/ensera-ai/taisce-java.git</developerConnection>
+    <url>https://github.com/ensera-ai/taisce-java</url>
+  </scm>
+  <developers>
+    <developer><name>The Taisce Authors</name><url>https://github.com/ensera-ai/taisce-java</url></developer>
+  </developers>
   <modules>
     <module>taisce-client</module>
     <module>taisce-langchain4j</module>
     <module>taisce-spring-ai</module>
   </modules>
   <properties>
+    <revision>0.1.0</revision>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <!-- The framework versions every module compiles against, in one place. -->
@@ -36,8 +46,32 @@
   <build>
     <plugins>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.3</version></plugin>
+      <plugin><groupId>org.codehaus.mojo</groupId><artifactId>flatten-maven-plugin</artifactId><version>1.7.0</version>
+        <configuration><updatePomFile>true</updatePomFile><flattenMode>ossrh</flattenMode></configuration>
+        <executions>
+          <execution><id>flatten</id><phase>process-resources</phase><goals><goal>flatten</goal></goals></execution>
+          <execution><id>flatten-clean</id><phase>clean</phase><goals><goal>clean</goal></goals></execution>
+        </executions></plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version>
         <configuration><compilerArgs><arg>-Xlint:all</arg><arg>-Werror</arg></compilerArgs></configuration></plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-source-plugin</artifactId><version>3.3.1</version>
+            <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions></plugin>
+          <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-javadoc-plugin</artifactId><version>3.11.2</version>
+            <executions><execution><id>attach-javadocs</id><goals><goal>jar</goal></goals></execution></executions></plugin>
+          <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-gpg-plugin</artifactId><version>3.2.7</version>
+            <executions><execution><id>sign-artifacts</id><phase>verify</phase><goals><goal>sign</goal></goals></execution></executions></plugin>
+          <plugin><groupId>org.sonatype.central</groupId><artifactId>central-publishing-maven-plugin</artifactId><version>0.7.0</version>
+            <extensions>true</extensions>
+            <configuration><publishingServerId>central</publishingServerId><autoPublish>true</autoPublish><waitUntil>published</waitUntil></configuration></plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
