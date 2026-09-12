@@ -1,0 +1,40 @@
+# Copyright 2026 The Taisce Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# A release is a tag, built, signed and deployed to Maven Central by this workflow with the GPG key
+# and the Sonatype credentials held only as repository secrets; artefacts carry a provenance
+# attestation beside the GPG signature Central requires.
+name: release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          server-id: central
+          server-username: SONATYPE_USERNAME
+          server-password: SONATYPE_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - run: mvn -q -B test
+      - run: mvn -q -B -DskipTests -Drevision=${GITHUB_REF_NAME#v} package
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: '*/target/*.jar'
+      - run: mvn -q -B -DskipTests -Drevision=${GITHUB_REF_NAME#v} -P release deploy
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
