@@ -52,11 +52,12 @@ project holds. A thief with the signing subkey cannot produce it.
 **Signature.** This shows the file was signed by the release key:
 
 ```bash
-gpg --keyserver keyserver.ubuntu.com --recv-keys RELEASE_KEY_FINGERPRINT
+gpg --keyserver keyserver.ubuntu.com --recv-keys 61E87BFA4BAC0D62248FAAEF01592C82B2A3DA3A
 gpg --verify taisce-client-X.Y.Z.jar.asc taisce-client-X.Y.Z.jar
 ```
 
-The release key's primary fingerprint is `RELEASE_KEY_FINGERPRINT`. Signing is done by a subkey
+The release key is `Taisce release signing`, primary fingerprint
+`61E87BFA4BAC0D62248FAAEF01592C82B2A3DA3A`. Signing is done by a subkey
 that expires and is rotated under that same primary key, so pin the primary fingerprint.
 
 Version 0.1.1 predates this key. It was signed by
