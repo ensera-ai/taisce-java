@@ -52,7 +52,7 @@ project holds. A thief with the signing subkey cannot produce it.
 **Signature.** This shows the file was signed by the release key:
 
 ```bash
-gpg --keyserver keys.openpgp.org --recv-keys RELEASE_KEY_FINGERPRINT
+gpg --keyserver keyserver.ubuntu.com --recv-keys RELEASE_KEY_FINGERPRINT
 gpg --verify taisce-client-X.Y.Z.jar.asc taisce-client-X.Y.Z.jar
 ```
 
