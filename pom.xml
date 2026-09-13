@@ -57,6 +57,10 @@
     </plugins>
   </build>
   <profiles>
+    <!-- The release profile builds every file Central requires and nothing that signs or uploads.
+         Signing and upload happen in release.yml, in a job that runs no Maven: Maven resolves and
+         executes plugins at run time, and none of that code should share a process with the signing
+         key. A signing or publishing plugin here would put it back beside the key. -->
     <profile>
       <id>release</id>
       <build>
@@ -65,20 +69,6 @@
             <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions></plugin>
           <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-javadoc-plugin</artifactId><version>3.11.2</version>
             <executions><execution><id>attach-javadocs</id><goals><goal>jar</goal></goals></execution></executions></plugin>
-          <!-- A CI runner has no terminal, so gpg cannot prompt for the passphrase. Loopback pinentry
-               makes it read the passphrase Maven passes instead of trying to open a dialog that will
-               never appear; without it a release hangs or fails with "Inappropriate ioctl for device". -->
-          <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-gpg-plugin</artifactId><version>3.2.7</version>
-            <configuration>
-              <gpgArguments><arg>--pinentry-mode</arg><arg>loopback</arg></gpgArguments>
-            </configuration>
-            <executions><execution><id>sign-artifacts</id><phase>verify</phase><goals><goal>sign</goal></goals></execution></executions></plugin>
-          <!-- 0.7.0's response model rejects any field Central adds later; it threw on an unrecognised
-               "warnings" field after the deployment had already published, turning a successful release
-               into a red build. A version that tolerates the current API is the fix. -->
-          <plugin><groupId>org.sonatype.central</groupId><artifactId>central-publishing-maven-plugin</artifactId><version>0.11.0</version>
-            <extensions>true</extensions>
-            <configuration><publishingServerId>central</publishingServerId><autoPublish>true</autoPublish><waitUntil>published</waitUntil></configuration></plugin>
         </plugins>
       </build>
     </profile>
