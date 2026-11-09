@@ -7,12 +7,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -43,6 +49,7 @@ public final class TaisceClient implements Artifacts {
 
     public TaisceClient(String baseUrl, String token, HttpClient http, Duration timeout) {
         if (baseUrl == null || baseUrl.isBlank()) throw new IllegalArgumentException("a deployment address is required");
+        requireTransport(baseUrl);
         if (token == null || token.isBlank()) throw new IllegalArgumentException("a credential is required");
         this.baseUrl = baseUrl.replaceAll("/+$", "");
         this.token = token;
@@ -170,6 +177,155 @@ public final class TaisceClient implements Artifacts {
         return post("/v1/artifacts/delete", body, 200);
     }
 
+    /**
+     * Erases one person: every row the deployment holds for the subject, and hands back what it
+     * measured afterwards.
+     *
+     * <p>Irreversible. A separate method from {@link #eraseSources} because the deployment refuses a
+     * request naming both a subject and sources, or neither; two methods make that request
+     * impossible to write. Needs a credential allowed to erase: a read-only key gets
+     * {@link TaisceForbiddenException}. This is for application code that has decided, in code, that a
+     * request to forget is genuine; it is not exposed to a model by either adapter, because text that
+     * reaches a model is written by somebody else.
+     *
+     * @param reason recorded with the erasure and echoed nowhere else; may be null
+     * @return the receipt, always clean
+     * @throws TaisceErasureNotCleanException when rows still match; the exception carries the receipt
+     * @throws IllegalArgumentException when the subject is empty
+     */
+    public ErasureReceipt eraseSubject(String dataSubjectId, String reason) {
+        if (dataSubjectId == null || dataSubjectId.isBlank()) throw new IllegalArgumentException("an erasure by subject names the person it is for");
+        ObjectNode body = JSON.createObjectNode();
+        body.put("data_subject_id", dataSubjectId);
+        return erase(body, reason);
+    }
+
+    /**
+     * Erases what was derived from the named observations, without touching the rest of the person.
+     * Irreversible; see {@link #eraseSubject} for the rest of the contract.
+     *
+     * @throws IllegalArgumentException when no observation is named or more than {@value #MAX_SOURCES} are
+     */
+    public ErasureReceipt eraseSources(List<String> sourceObservationIds, String reason) {
+        ObjectNode body = JSON.createObjectNode();
+        sources(body, sourceObservationIds, "an erasure by source");
+        return erase(body, reason);
+    }
+
+    /**
+     * Everything the deployment holds for one subject. Allowed to a read-only key.
+     *
+     * @throws TaisceExportTooLargeException when the subject holds more rows than one export returns
+     */
+    public DataExport exportSubject(String dataSubjectId) {
+        if (dataSubjectId == null || dataSubjectId.isBlank()) throw new IllegalArgumentException("an export names the person it is for");
+        ObjectNode body = JSON.createObjectNode();
+        body.put("data_subject_id", dataSubjectId);
+        return export(body);
+    }
+
+    /** Everything the deployment holds that was derived from the named observations. */
+    public DataExport exportSources(List<String> sourceObservationIds) {
+        ObjectNode body = JSON.createObjectNode();
+        sources(body, sourceObservationIds, "an export by source");
+        return export(body);
+    }
+
+    /** The most source observations one erasure or export may name; a larger set is several requests, each with its own receipt. */
+    public static final int MAX_SOURCES = 10000;
+
+    private static void sources(ObjectNode body, List<String> ids, String what) {
+        if (ids == null || ids.isEmpty()) throw new IllegalArgumentException(what + " names at least one observation");
+        if (ids.size() > MAX_SOURCES) throw new IllegalArgumentException(what + " names at most " + MAX_SOURCES + " observations; split it into more requests");
+        ArrayNode list = body.putArray("source_observation_ids");
+        for (String id : ids) {
+            if (id == null || id.isBlank()) throw new IllegalArgumentException(what + " cannot name an empty observation id");
+            list.add(id);
+        }
+    }
+
+    private ErasureReceipt erase(ObjectNode body, String reason) {
+        if (reason != null) body.put("reason", reason);
+        JsonNode node = post("/v1/erasures", body, 200);
+        ErasureReceipt receipt = new ErasureReceipt(node.path("request_id").asText(""), node.path("scope").asText(""),
+                node.path("data_subject_id").asText(""), strings(node.path("source_observation_ids")),
+                node.hasNonNull("completed_at") ? OffsetDateTime.parse(node.get("completed_at").asText()).toInstant() : null,
+                counts(node.path("deleted")), counts(node.path("residual")), node.path("clean").asBoolean(false));
+        // Clean is the deployment's word and the residual is its measurement; a receipt is clean only
+        // if both agree, so a response whose flag says clean over a non-zero count is not believed.
+        if (!receipt.clean() || receipt.residual().values().stream().anyMatch(n -> n != 0)) throw new TaisceErasureNotCleanException(receipt);
+        return receipt;
+    }
+
+    private DataExport export(ObjectNode body) {
+        JsonNode node = post("/v1/exports", body, 200);
+        Map<String, List<JsonNode>> sections = new LinkedHashMap<>();
+        node.path("sections").properties().forEach(e -> {
+            List<JsonNode> rows = new ArrayList<>();
+            e.getValue().forEach(rows::add);
+            sections.put(e.getKey(), rows);
+        });
+        return new DataExport(node.path("scope").asText(""), node.path("data_subject_id").asText(""),
+                strings(node.path("source_observation_ids")), sections, counts(node.path("rows")));
+    }
+
+    private static List<String> strings(JsonNode array) {
+        List<String> out = new ArrayList<>();
+        array.forEach(n -> out.add(n.asText()));
+        return out;
+    }
+
+    private static Map<String, Integer> counts(JsonNode object) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        object.properties().forEach(e -> out.put(e.getKey(), e.getValue().asInt(0)));
+        return out;
+    }
+
+    /**
+     * Refuses an address the credential would cross the network in clear to.
+     *
+     * <p>The bearer token is the project's key, and a project holds every end user's memory, so one
+     * mistyped or downgraded environment variable would otherwise hand it to anyone on the path.
+     * Loopback is the exception because nothing leaves the machine; there is no opt-in flag for a
+     * plaintext remote host, because nothing here needs one, and a flag nobody needs is a way round
+     * the check that someone will eventually set. Hosts are matched literally and never resolved:
+     * resolving would let a DNS answer decide whether the check passes.
+     */
+    private static void requireTransport(String baseUrl) {
+        URI uri;
+        try {
+            uri = URI.create(baseUrl.trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("the deployment address is not a URL", e);
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        String host = uri.getHost();
+        if (host == null) throw new IllegalArgumentException("the deployment address needs a host");
+        if (scheme.equals("https")) return;
+        if (scheme.equals("http") && isLoopback(host)) return;
+        throw new IllegalArgumentException("refusing " + scheme + "://" + host + ": the credential would cross the network in clear; "
+                + "use https, or http only to localhost, 127.0.0.0/8 or ::1");
+    }
+
+    private static boolean isLoopback(String host) {
+        if (host.equalsIgnoreCase("localhost")) return true;
+        if (host.startsWith("[") && host.endsWith("]")) {
+            try {
+                // A literal containing a colon is parsed, never looked up.
+                return InetAddress.getByName(host).isLoopbackAddress();
+            } catch (UnknownHostException e) {
+                return false;
+            }
+        }
+        String[] octets = host.split("\\.", -1);
+        if (octets.length != 4 || !octets[0].equals("127")) return false;
+        for (String octet : octets) {
+            // No leading zeros: "0127" is octal to some parsers and decimal to others.
+            if (!octet.matches("0|[1-9][0-9]{0,2}") || Integer.parseInt(octet) > 255) return false;
+        }
+        return true;
+    }
+
     /** Resolves a fact to its record, as the contract returns it. */
     public JsonNode resolveCitation(String factId) {
         ObjectNode body = JSON.createObjectNode();
@@ -209,8 +365,11 @@ public final class TaisceClient implements Artifacts {
             return node;
         }
         JsonNode error = node.path("error");
-        throw new TaisceException(response.statusCode(),
-                error.path("code").asText("unexpected_response"),
-                error.path("message").asText("the deployment answered " + response.statusCode()));
+        int status = response.statusCode();
+        String code = error.path("code").asText("unexpected_response");
+        String message = error.path("message").asText("the deployment answered " + status);
+        if (status == 403 && code.equals("forbidden")) throw new TaisceForbiddenException(status, code, message);
+        if (status == 422 && code.equals("export_too_large")) throw new TaisceExportTooLargeException(status, code, message);
+        throw new TaisceException(status, code, message);
     }
 }

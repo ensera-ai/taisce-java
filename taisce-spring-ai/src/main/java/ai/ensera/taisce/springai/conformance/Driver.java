@@ -3,7 +3,9 @@
 package ai.ensera.taisce.springai.conformance;
 
 import ai.ensera.taisce.client.Memory;
+import ai.ensera.taisce.client.ErasureReceipt;
 import ai.ensera.taisce.client.TaisceClient;
+import ai.ensera.taisce.client.TaisceErasureNotCleanException;
 import ai.ensera.taisce.springai.TaisceMemoryAdvisor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -127,6 +129,52 @@ public final class Driver {
         return report;
     }
 
+    /**
+     * An action the suite asks for that is not a turn. The only one so far is an erasure, and it goes
+     * through the adapter's own client by subject, as an application would; the suite then exports the
+     * subject itself, so the receipt reported here is what the client said, not what is true.
+     */
+    static ObjectNode runAction(JsonNode instruction) {
+        ObjectNode report = JSON.createObjectNode();
+        report.putArray("model_messages");
+        report.put("observed", false);
+        String action = instruction.path("action").asText();
+        if (!action.equals("erase")) {
+            // No default for an instruction this driver cannot read: running it as an empty turn
+            // would pass a case that tested nothing.
+            report.put("fatal", true);
+            report.put("error", "unknown action: " + action);
+            return report;
+        }
+        report.put("fatal", false);
+        ObjectNode erasure = report.putObject("erasure");
+        try {
+            TaisceClient client = new TaisceClient(instruction.path("api").asText(), instruction.path("token").asText(),
+                    HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(), Duration.ofSeconds(10));
+            ErasureReceipt receipt = client.eraseSubject(instruction.path("data_subject_id").asText(), "conformance");
+            describe(erasure, receipt);
+            erasure.put("error", "");
+        } catch (TaisceErasureNotCleanException e) {
+            describe(erasure, e.receipt());
+            erasure.put("error", e.getMessage());
+        } catch (RuntimeException e) {
+            erasure.removeAll();
+            erasure.put("error", String.valueOf(e.getMessage()));
+        }
+        return report;
+    }
+
+    private static void describe(ObjectNode erasure, ErasureReceipt receipt) {
+        erasure.set("deleted", JSON.valueToTree(receipt.deleted()));
+        erasure.set("residual", JSON.valueToTree(receipt.residual()));
+        erasure.put("clean", receipt.clean());
+    }
+
+    /** An instruction naming an action is never a turn: the field's presence decides, whatever its value. */
+    static ObjectNode handle(JsonNode instruction) {
+        return instruction.has("action") ? runAction(instruction) : runTurn(instruction);
+    }
+
     public static void main(String[] args) throws IOException {
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String line;
@@ -134,7 +182,7 @@ public final class Driver {
             if (line.isBlank()) {
                 continue;
             }
-            System.out.println(runTurn(JSON.readTree(line)).toString());
+            System.out.println(handle(JSON.readTree(line)).toString());
             System.out.flush();
         }
     }

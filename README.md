@@ -43,7 +43,9 @@ var chat = ChatClient.builder(model).defaultAdvisors(new TaisceMemoryAdvisor(cli
   LangChain4j the wrapped model sees the tool loop's requests and results and stores none of them; in
   Spring AI, tools execute inside the model call and never reach an advisor.
 - **A retried store is one observation.** The idempotency key is derived from the subject, the run
-  and the turn, the same bytes as the .NET and Python adapters'.
+  and the turn, the same bytes as the .NET and Python adapters': every field is a length-prefixed
+  netstring, so no content can move a boundary and make two different turns one key. A turn that was
+  being retried across the upgrade to 0.2.0 is stored twice, once, because every key changed.
 - **Compaction is replacement, never a summary.** With a positive `compactAfterMessages`, a request
   holding more non-system messages than that is rebuilt as the system messages, one untrusted user
   message carrying the deployment's context (its segments and verbatim turns unchanged) and the
@@ -61,6 +63,39 @@ new TaisceChatModel(model, client, "alice", runId, Map.of(), onError, 40);
 LangChain4j's chat memory is read before the new message is added to it, which is why the adapter is
 a model decorator and not a `ChatMemory`: a memory cannot inject for the turn in hand.
 
+## The client: address, erasure and export
+
+**The address must be `https`.** Every `TaisceClient` constructor refuses any other scheme unless the
+host is loopback (`localhost`, an address in `127.0.0.0/8`, or `::1`), because the bearer token is the
+project's key and would cross the network in clear. There is no switch to allow it.
+
+**Erasure and export are methods on the client, and nowhere else.** They are for application code that
+has decided, in code, that a request to forget or to export is genuine; neither adapter exposes them
+to a model, and a tool that did would let anyone whose text reaches the model ask for an erasure.
+
+```java
+ErasureReceipt receipt = client.eraseSubject("alice", "request from the person");    // all of a person
+ErasureReceipt part = client.eraseSources(List.of(observationId), "wrong person");   // what came from these turns
+DataExport export = client.exportSubject("alice");                                   // allowed to a read-only key
+DataExport slice = client.exportSources(List.of(observationId));
+```
+
+- Subject and sources are separate methods because the deployment refuses a request naming both or
+  neither; one method with two optional arguments could write that request. An empty subject, or no
+  source ids, or more than 10 000, is an `IllegalArgumentException` before anything is sent.
+- **An erasure that leaves rows throws `TaisceErasureNotCleanException`**, carrying the whole
+  `ErasureReceipt` (`receipt()`, with `deleted` and `residual` counts per kind). A receipt returned as
+  a plain value lets code that never reads it tell a person their data is gone while rows remain. A
+  receipt that returns is clean.
+- A key that may not erase gets `TaisceForbiddenException` (403 `forbidden`), and an export larger
+  than one response gets `TaisceExportTooLargeException` (422 `export_too_large`): the deployment
+  does not page exports and neither does the client. Both extend `TaisceException`.
+- `DataExport.sections()` holds each section's rows as raw JSON (`message`, `chunk`, `fact`, ...), and
+  `rows()` the count of each, so an export can be compared with a receipt.
+
+Every read-write key can erase every subject in its project. These methods make that reachable from
+code; they do not widen it.
+
 ## How it is proved
 
 The adapter conformance suite from the service repository runs against a live deployment with each
@@ -72,8 +107,20 @@ TAISCE_TOKEN=… TAISCE_API=https://memory.example TAISCE_CASES=../taisce/confor
 TAISCE_TOKEN=… TAISCE_API=https://memory.example TAISCE_CASES=../taisce/conformance/cases.json scripts/conformance.sh spring-ai
 ```
 
-Eight cases, eight passes, for each. `mvn test` holds what needs no deployment.
+Twelve cases, twelve passes, for each (the turn-key and erasure cases need a service release that
+carries them; `conformance.yml` pins the release it was proved against). `mvn verify` holds what needs
+no deployment, including every vector of the turn key.
+
+The client's erasure and export are proved against a deployment too, with a read-write and a
+read-only key, and the tests **fail rather than skip** without them:
+
+```sh
+TAISCE_API=http://localhost:18080 TAISCE_TOKEN=… TAISCE_READER_TOKEN=… mvn -Plive verify -pl taisce-client
+```
+
+CI also fails on a known vulnerability in anything the modules resolve (osv-scanner, on every push
+and daily), and every module resolves one Jackson version: `mvn dependency:tree -Dincludes=com.fasterxml.jackson.core`.
 
 ## Versions
 
-Built against LangChain4j 1.20.0 and Spring AI 2.0.1 on Java 21.
+Built against LangChain4j 1.23.0 and Spring AI 2.0.2 on Java 21.

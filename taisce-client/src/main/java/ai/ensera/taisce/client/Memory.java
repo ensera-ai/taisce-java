@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -22,6 +23,8 @@ public final class Memory {
     public static final String MESSAGE_PREFIX = "taisce-memory/v1 untrusted";
     /** The key under which an injected message is marked untrusted, where the framework has a slot for it. */
     public static final String UNTRUSTED = "taisce.untrusted";
+    /** The derivation's name is the first field, so a future change of derivation cannot collide with this one. */
+    private static final String DERIVATION = "taisce-turn-key/2";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private Memory() {
@@ -69,17 +72,30 @@ public final class Memory {
         return text != null && text.startsWith(MESSAGE_PREFIX);
     }
 
-    /** A turn's key: a version-5 UUID over the subject, the run and the messages, so a retried store is one observation. */
+    /**
+     * A turn's key: a version-5 UUID over the subject, the run and the messages, so a retried store
+     * is one observation.
+     *
+     * <p>Every field is a netstring, its length in UTF-8 bytes then its bytes, because a separator
+     * is a character content can contain: with fields joined by newlines, a role name inside a
+     * message moves a boundary and two different turns hash the same bytes, and the deployment then
+     * refuses the second as a conflicting retry of the first, on every retry. A length cannot be
+     * forged by content. The length is of the encoding, not {@code String.length()}, which counts
+     * UTF-16 units and so differs from the other adapters' for every character outside the Basic
+     * Multilingual Plane.
+     */
     public static String turnKey(String dataSubjectId, String runId, List<TaisceClient.Message> messages) {
-        StringBuilder text = new StringBuilder()
-                .append(dataSubjectId == null ? "" : dataSubjectId).append('\n')
-                .append(runId == null ? "" : runId).append('\n');
+        ByteArrayOutputStream text = new ByteArrayOutputStream();
+        netstring(text, DERIVATION);
+        netstring(text, dataSubjectId == null ? "" : dataSubjectId);
+        netstring(text, runId == null ? "" : runId);
         for (TaisceClient.Message m : messages) {
-            text.append(m.role()).append('\n').append(m.content()).append('\n');
+            netstring(text, m.role());
+            netstring(text, m.content());
         }
         byte[] digest;
         try {
-            digest = MessageDigest.getInstance("SHA-256").digest(text.toString().getBytes(StandardCharsets.UTF_8));
+            digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray());
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is part of every JDK", e);
         }
@@ -90,5 +106,13 @@ public final class Memory {
         for (int i = 0; i < 8; i++) high = (high << 8) | (digest[i] & 0xff);
         for (int i = 8; i < 16; i++) low = (low << 8) | (digest[i] & 0xff);
         return new UUID(high, low).toString();
+    }
+
+    private static void netstring(ByteArrayOutputStream out, String field) {
+        byte[] bytes = (field == null ? "" : field).getBytes(StandardCharsets.UTF_8);
+        out.writeBytes(Integer.toString(bytes.length).getBytes(StandardCharsets.US_ASCII));
+        out.write(':');
+        out.writeBytes(bytes);
+        out.write(',');
     }
 }

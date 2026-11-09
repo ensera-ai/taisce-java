@@ -9,10 +9,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Daily, because an advisory is published against a version that did not change: a dependency that
+  # was clean on the day it merged is not clean a month later, and a build that only runs on commits
+  # would not say so until somebody pushed.
+  schedule:
+    - cron: '17 4 * * *'
 permissions:
   contents: read
 jobs:
   build:
+    # The schedule exists for the advisory check below; a nightly rebuild of an unchanged tree adds nothing.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       # Referenced by commit SHA, as release.yml explains: a tag can be moved by whoever controls it.
@@ -23,3 +30,42 @@ jobs:
           java-version: '21'
           cache: maven
       - run: mvn -B -q verify
+
+  # Fails the build on a known vulnerability in anything the modules resolve, the frameworks' own
+  # transitive dependencies included: the client ships Jackson to every consumer, and an advisory
+  # against it was open for weeks before anyone looked (ensera-ai/taisce#123).
+  advisories:
+    runs-on: ubuntu-latest
+    env:
+      # The release binary, pinned by version and by the digest GitHub recorded for that asset when it
+      # was read on 2026-11-09. A tag can be moved; a digest the download must match cannot.
+      OSV_SCANNER_VERSION: v2.7.0
+      OSV_SCANNER_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: osv-scanner, verified against its digest
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      # Maven resolves the graph and the scanner reads the result. Pointing the scanner at the poms
+      # instead made it resolve them itself, and it cannot read `${revision}` (the version every module
+      # is released at), so it resolved nothing and exited with an error. Maven's own resolution is also
+      # the one that is shipped, and the SBOM names the framework-brought dependencies a scan of the
+      # declared ones would miss. Test scope is included: a vulnerable test dependency is still run on
+      # the machines of everyone who builds this.
+      - name: The resolved dependency graph
+        run: >-
+          mvn -B -q org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom
+          -DoutputFormat=json -DoutputName=bom -DincludeTestScope=true
+      # Exits non-zero when anything in the graph has a known advisory, which is what fails the job; a
+      # file it cannot read is an error too, never a pass.
+      - name: Known vulnerabilities in the resolved graph
+        run: '"$RUNNER_TEMP/osv-scanner" scan source -L target/bom.json'
