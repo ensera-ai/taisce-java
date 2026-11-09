@@ -68,4 +68,4 @@ jobs:
       # Exits non-zero when anything in the graph has a known advisory, which is what fails the job; a
       # file it cannot read is an error too, never a pass.
       - name: Known vulnerabilities in the resolved graph
-        run: '"$RUNNER_TEMP/osv-scanner" scan source --sbom target/bom.json'
+        run: '"$RUNNER_TEMP/osv-scanner" scan source -L target/bom.json'
