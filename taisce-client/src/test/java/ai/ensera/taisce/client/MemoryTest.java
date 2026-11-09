@@ -27,6 +27,41 @@ class MemoryTest {
         assertNotEquals(key, Memory.turnKey("subject-1", "run-1", List.of(new TaisceClient.Message("user", "hello again"))));
     }
 
+    /**
+     * The vectors every adapter is checked against (testdata of the service's conformance suite),
+     * including a character outside the Basic Multilingual Plane, which a UTF-16 length gets wrong.
+     */
+    @Test
+    void everyTurnKeyVectorIsReproducedByteForByte() throws Exception {
+        JsonNode file = new ObjectMapper().readTree(getClass().getResourceAsStream("/turn-keys.json"));
+        assertEquals("taisce-turn-key/2", file.path("derivation").asText());
+        assertTrue(file.path("vectors").size() >= 8, "the vectors file was truncated");
+        for (JsonNode v : file.path("vectors")) {
+            List<TaisceClient.Message> messages = new java.util.ArrayList<>();
+            for (JsonNode m : v.path("messages")) messages.add(new TaisceClient.Message(m.path("role").asText(), m.path("content").asText()));
+            assertEquals(v.path("key").asText(), Memory.turnKey(v.path("data_subject_id").asText(), v.path("run").asText(), messages), v.path("name").asText());
+        }
+    }
+
+    @Test
+    void twoTurnsWhoseLineJoinedTextIsIdenticalAreTwoKeys() throws Exception {
+        JsonNode vectors = new ObjectMapper().readTree(getClass().getResourceAsStream("/turn-keys.json")).path("vectors");
+        assertNotEquals(vectors.get(0).path("key").asText(), vectors.get(1).path("key").asText());
+        assertNotEquals(keyOf(vectors.get(0)), keyOf(vectors.get(1)));
+    }
+
+    @Test
+    void anAbsentSubjectAndRunAreTheEmptyString() {
+        List<TaisceClient.Message> turn = List.of(new TaisceClient.Message("user", "hello"));
+        assertEquals(Memory.turnKey("", "", turn), Memory.turnKey(null, null, turn));
+    }
+
+    private static String keyOf(JsonNode v) {
+        List<TaisceClient.Message> messages = new java.util.ArrayList<>();
+        for (JsonNode m : v.path("messages")) messages.add(new TaisceClient.Message(m.path("role").asText(), m.path("content").asText()));
+        return Memory.turnKey(v.path("data_subject_id").asText(), v.path("run").asText(), messages);
+    }
+
     @Test
     void theMemoryMessageIsThePrefixLineAndOneDocument() throws Exception {
         JsonNode bundle = new ObjectMapper().readTree("{\"controls\":{\"hops\":1},\"facts\":[{\"fact_id\":\"f1\"}],\"reports\":[],\"passages\":[],\"degraded\":[],\"reach\":{\"terms\":1}}");

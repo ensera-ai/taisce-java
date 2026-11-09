@@ -3,11 +3,12 @@
 #
 # The adapter conformance suite, against a deployment this job stands up.
 #
-# The suite holds ten rules that are easy to get subtly wrong once per language and impossible to
+# The suite holds twelve rules that are easy to get subtly wrong once per language and impossible to
 # notice from inside one adapter: that injected memory is exactly one untrusted user message, that a
 # recall failure is survived while the turn is still stored, that a write failure is never swallowed,
 # that a failed model call stores nothing, that tool traffic and synthetic messages never become
-# memory, that a retried turn is stored once. Until this file existed it ran only when a person ran
+# memory, that a retried turn is stored once, that two different turns are never one key, and that an erasure
+# hands back the receipt. Until this file existed it ran only when a person ran
 # it and looked at what it printed, so each adapter's own tests could stay green while its behaviour
 # diverged from the other two. The divergence that matters is the quiet one: an adapter that
 # swallows a store failure loses turns, and a lost turn is invisible until somebody asks what the
@@ -118,6 +119,33 @@ jobs:
           TAISCE_BIN: ${{ github.workspace }}/.conformance/taisce
           TAISCE_CASES: ${{ github.workspace }}/.conformance/cases.json
         run: scripts/conformance.sh spring-ai
+
+      # The client's own proof, which the suite above cannot give: erasure and export through the typed
+      # methods, against this deployment, with the read-only key the third property needs. A key is
+      # minted here rather than kept as a secret: a credential that must exist is a credential that can
+      # be stolen, and this one lives as long as the stack does. Not part of ci.yml's `mvn verify`
+      # because that build has no deployment, and these tests fail rather than skip without one.
+      - name: A read-only key
+        working-directory: .conformance
+        env:
+          COMPOSE_PROJECT_NAME: taisce-conformance
+          TAISCE_PORT: '18080'
+          TAISCE_INFERENCE_API_KEY: conformance-forms-nothing
+          TAISCE_INFERENCE_ALLOWLIST: forms-nothing.invalid
+        run: |
+          set -euo pipefail
+          # --no-deps: the database is already up and the bootstrap job's own dependencies are not wanted again.
+          reader="$(docker compose run --rm --no-deps bootstrap credential issue live-reader --project default --read-only \
+            | awk '/token:/{sub(/.*token: /,""); print; exit}')"
+          if [ -z "$reader" ]; then
+            echo "no read-only token was printed" >&2
+            exit 1
+          fi
+          echo "::add-mask::$reader"
+          echo "TAISCE_READER_TOKEN=$reader" >> "$GITHUB_ENV"
+
+      - name: Erasure and export against the deployment
+        run: mvn -B -Plive verify -pl taisce-client
 
       - name: What the deployment did
         if: always()
