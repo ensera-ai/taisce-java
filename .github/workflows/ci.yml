@@ -50,9 +50,22 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
           echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/osv-scanner"
-      # The scanner resolves each pom.xml's transitive graph itself and exits non-zero when anything
-      # in it has an advisory, which is what fails the job. A pom.xml it could not resolve is an error
-      # too, not a pass: there is no --no-resolve here, because a scan of only the declared
-      # dependencies would miss exactly the framework-brought ones.
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      # Maven resolves the graph and the scanner reads the result. Pointing the scanner at the poms
+      # instead made it resolve them itself, and it cannot read `${revision}` (the version every module
+      # is released at), so it resolved nothing and exited with an error. Maven's own resolution is also
+      # the one that is shipped, and the SBOM names the framework-brought dependencies a scan of the
+      # declared ones would miss. Test scope is included: a vulnerable test dependency is still run on
+      # the machines of everyone who builds this.
+      - name: The resolved dependency graph
+        run: >-
+          mvn -B -q org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom
+          -DoutputFormat=json -DoutputName=bom -DincludeTestScope=true
+      # Exits non-zero when anything in the graph has a known advisory, which is what fails the job; a
+      # file it cannot read is an error too, never a pass.
       - name: Known vulnerabilities in the resolved graph
-        run: '"$RUNNER_TEMP/osv-scanner" scan source --recursive .'
+        run: '"$RUNNER_TEMP/osv-scanner" scan source --sbom target/bom.json'
